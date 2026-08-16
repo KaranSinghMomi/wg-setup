@@ -5,8 +5,9 @@ sends you the client config — as a `.conf` file **and** a QR code — over Tel
 
 - **One command.** No Docker, no image registry, no build step.
 - **Any architecture.** ARM (Oracle Ampere A1) and x86 alike.
-- **Several UDP ports at once.** Connect on `53`, `9200`, `9201`, … so a network
-  that blocks one port can be worked around by changing only the client's port.
+- **Several UDP ports at once** — or **any port at all** with `--any-port`, so a
+  network that blocks one port is worked around by editing a single number in the
+  client config.
 - **Multiple servers, one chat.** Every server posts its own config into the same
   Telegram chat, identified by its public IP.
 
@@ -64,7 +65,9 @@ app, or import the `.conf` on desktop.
 |---|---|---|
 | `--token <token>` | *required* | Telegram bot token |
 | `--chat <id>` | *required* | Telegram chat id (negative for groups) |
-| `--ports <list>` | `51820` | Comma-separated UDP ports clients may use |
+| `--ports <list>` | `51820` | Comma-separated UDP ports clients may use; the first is written into new configs |
+| `--any-port` | off | Accept **any** UDP port (see below) |
+| `--no-any-port` | | Turn that off again on a re-run |
 | `--name <name>` | public IP | Label for this server in Telegram |
 | `--endpoint <ip>` | auto-detected | Override the public address |
 | `--subnet <cidr>` | `10.13.13.0/24` | Tunnel subnet (must be a `/24`) |
@@ -95,6 +98,42 @@ wg-peer render              # regenerate wg0.conf from saved state
 
 Adding and removing peers takes effect **without restarting the tunnel** — other
 clients stay connected.
+
+### Accepting any port (`--any-port`)
+
+By default only the ports in `--ports` work. With `--any-port`, **every** UDP port
+reaches the server, so a client can be pointed at literally any port number:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh \
+  | sudo bash -s -- --token ... --chat ... --ports 53,9200,9201 --any-port
+```
+
+`--ports` still decides which port new configs are generated with; `--any-port`
+just means nothing else is rejected. Change `Endpoint` in the client to `:443`,
+`:8080`, `:34567` — anything — and it connects with no server-side change.
+
+**You must also open all UDP ports in your cloud firewall.** On Oracle: VCN
+Security List → Add Ingress Rule → source `0.0.0.0/0`, IP Protocol **UDP**, and
+leave the **destination port range empty** (which means all ports). If you only
+open three there, only those three will work no matter what the server allows.
+
+Two things worth understanding before enabling it:
+
+- **Any other inbound UDP service on this machine would be swallowed**, because
+  all UDP is handed to WireGuard. Fine on a dedicated VPN box, not fine if the
+  same host also serves DNS, game traffic, VoIP, etc.
+- **DHCP is deliberately exempted** (`--dport 67:68 -j RETURN`, inserted before
+  the catch-all). Without that, a lease renewal reply would be redirected into
+  WireGuard and the VM could lose its IP address.
+
+Your own outbound UDP (DNS, NTP) is unaffected: netfilter's `nat` table is only
+consulted for the first packet of a connection, so replies return through
+conntrack and never hit the redirect. This is verified in testing.
+
+Exposing every UDP port is less alarming than it sounds — WireGuard silently
+drops anything that fails authentication, so scanners get no response and no
+service fingerprint from any of those ports.
 
 ### Switching ports when one is blocked
 

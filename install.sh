@@ -32,8 +32,10 @@ MTU="${MTU:-1420}"
 PEER_NAME="${PEER_NAME:-client}"
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
+ANY_PORT="${ANY_PORT:-0}"
 DO_UNINSTALL=0
-PEER_EXPLICIT=0   # was --peer passed on this invocation?
+PEER_EXPLICIT=0     # was --peer passed on this invocation?
+ANYPORT_EXPLICIT=0  # was --any-port / --no-any-port passed?
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLD=$'\033[1m'; RST=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$GRN$BLD" "$RST" "$*"; }
@@ -51,6 +53,13 @@ Required (unless already saved in /etc/wireguard/installer.env):
 Optional:
   --ports <list>       Comma-separated UDP ports clients may use
                        (default: 51820).  Example: 53,9200,9201,443
+                       The first one is written into new client configs.
+  --any-port           Accept clients on ANY UDP port, not just --ports.
+                       Clients can then change the Endpoint port freely.
+                       Requires your cloud firewall to allow all UDP
+                       ports (on Oracle: VCN ingress UDP 1-65535).
+                       DHCP (67-68) is exempted so the VM keeps its lease.
+  --no-any-port        Disable the above on a re-run.
   --name <name>        Label for this server (default: its public IP)
   --endpoint <ip|host> Override the auto-detected public address
   --subnet <cidr>      Tunnel subnet, /24 (default: 10.13.13.0/24)
@@ -76,6 +85,8 @@ while [[ $# -gt 0 ]]; do
         --dns)       CLIENT_DNS="${2:-}";   shift 2 ;;
         --mtu)       MTU="${2:-}";          shift 2 ;;
         --peer)      PEER_NAME="${2:-}"; PEER_EXPLICIT=1; shift 2 ;;
+        --any-port)    ANY_PORT=1; ANYPORT_EXPLICIT=1; shift ;;
+        --no-any-port) ANY_PORT=0; ANYPORT_EXPLICIT=1; shift ;;
         --uninstall) DO_UNINSTALL=1;        shift ;;
         -h|--help)   usage; exit 0 ;;
         *)           die "unknown option: $1  (try --help)" ;;
@@ -146,6 +157,10 @@ if [[ -f "$ENV_FILE" ]]; then
     if [[ $PEER_EXPLICIT -eq 0 ]]; then
         prev="$(saved PEER_NAME)"
         [[ -n "$prev" ]] && PEER_NAME="$prev"
+    fi
+    if [[ $ANYPORT_EXPLICIT -eq 0 ]]; then
+        prev="$(saved ANY_PORT)"
+        [[ -n "$prev" ]] && ANY_PORT="$prev"
     fi
 fi
 : "${prev:=}"   # keep set -u happy when the block above did not run
@@ -271,6 +286,7 @@ CLIENT_DNS='$CLIENT_DNS'
 MTU='$MTU'
 WAN_IF='$WAN_IF'
 PEER_NAME='$PEER_NAME'
+ANY_PORT='$ANY_PORT'
 ENVEOF
 chmod 600 "$ENV_FILE"
 
@@ -337,11 +353,18 @@ render_conf() {
         echo "PrivateKey = $(cat "$WG_DIR/server_private.key")"
         echo
 
-        # Multi-port: redirect each public UDP port to the single listener.
-        while read -r p; do
-            [[ -z "$p" || "$p" == "$WG_PORT" ]] && continue
-            echo "PostUp = iptables -t nat -A PREROUTING -i $WAN_IF -p udp --dport $p -j REDIRECT --to-port $WG_PORT"
-        done < <(port_list)
+        # Multi-port: redirect public UDP ports to the single listener.
+        if [[ "${ANY_PORT:-0}" == "1" ]]; then
+            # Accept ANY UDP port. Exempt DHCP first: swallowing a lease
+            # renewal would cost the VM its address and lock you out.
+            echo "PostUp = iptables -t nat -A PREROUTING -i $WAN_IF -p udp --dport 67:68 -j RETURN"
+            echo "PostUp = iptables -t nat -A PREROUTING -i $WAN_IF -p udp -j REDIRECT --to-port $WG_PORT"
+        else
+            while read -r p; do
+                [[ -z "$p" || "$p" == "$WG_PORT" ]] && continue
+                echo "PostUp = iptables -t nat -A PREROUTING -i $WAN_IF -p udp --dport $p -j REDIRECT --to-port $WG_PORT"
+            done < <(port_list)
+        fi
 
         # Accept the *redirected* port. Inserted at the top so it precedes
         # restrictive default REJECT rules (Oracle Cloud images ship one).
@@ -355,10 +378,15 @@ render_conf() {
         echo "PostDown = iptables -D FORWARD -o %i -j ACCEPT || true"
         echo "PostDown = iptables -D FORWARD -i %i -j ACCEPT || true"
         echo "PostDown = iptables -D INPUT -p udp --dport $WG_PORT -j ACCEPT || true"
-        while read -r p; do
-            [[ -z "$p" || "$p" == "$WG_PORT" ]] && continue
-            echo "PostDown = iptables -t nat -D PREROUTING -i $WAN_IF -p udp --dport $p -j REDIRECT --to-port $WG_PORT || true"
-        done < <(port_list)
+        if [[ "${ANY_PORT:-0}" == "1" ]]; then
+            echo "PostDown = iptables -t nat -D PREROUTING -i $WAN_IF -p udp -j REDIRECT --to-port $WG_PORT || true"
+            echo "PostDown = iptables -t nat -D PREROUTING -i $WAN_IF -p udp --dport 67:68 -j RETURN || true"
+        else
+            while read -r p; do
+                [[ -z "$p" || "$p" == "$WG_PORT" ]] && continue
+                echo "PostDown = iptables -t nat -D PREROUTING -i $WAN_IF -p udp --dport $p -j REDIRECT --to-port $WG_PORT || true"
+            done < <(port_list)
+        fi
 
         jq -r '.peers[] |
             "\n[Peer]\n# name = \(.name)\nPublicKey = \(.pub)\nPresharedKey = \(.psk)\nAllowedIPs = \(.ip)/32"' \
@@ -429,6 +457,9 @@ tg_send() {
     qrencode -t PNG -o "$qr" <"$conf"
 
     local ports_pretty; ports_pretty="$(port_list | paste -sd', ' -)"
+    if [[ "${ANY_PORT:-0}" == "1" ]]; then
+        ports_pretty="ANY UDP port (suggested: $ports_pretty)"
+    fi
     local text
     text="$(printf '\xF0\x9F\x9F\xA2 %s\nIP: %s\npeer: %s\nports: %s' \
         "$NODE_NAME" "$ENDPOINT" "$name" "$ports_pretty")"
@@ -602,6 +633,19 @@ fi
 # summary
 # --------------------------------------------------------------------------
 PRIMARY="${PORTS%%,*}"
+if [[ "$ANY_PORT" == "1" ]]; then
+    PORTS_SUMMARY="${BLD}ANY UDP port${RST} (config uses $PRIMARY)"
+    FIREWALL_NOTE="your cloud firewall must allow inbound UDP on ${BLD}ALL ports (1-65535)${RST}
+On Oracle Cloud: VCN Security List -> Add Ingress Rule, source 0.0.0.0/0,
+IP Protocol UDP, leave the destination port range EMPTY (means all ports).
+If you only open $PORTS there, only those will work."
+else
+    PORTS_SUMMARY="$PORTS"
+    FIREWALL_NOTE="your cloud firewall must allow inbound UDP on: ${BLD}$PORTS${RST}
+On Oracle Cloud that is the VCN Security List / NSG ingress rules -
+this script cannot configure it for you."
+fi
+
 case "$TG_DELIVERED" in
     1) DELIVERY="Client config and QR code have been ${GRN}sent to Telegram${RST}." ;;
     2) DELIVERY="Peer already existed; nothing was sent this run.
@@ -617,7 +661,7 @@ ${GRN}${BLD}WireGuard is up.${RST}
 
   server      ${BLD}$NODE_NAME${RST}  ($ENDPOINT)
   endpoint    $ENDPOINT:$PRIMARY
-  all ports   $PORTS
+  ports       $PORTS_SUMMARY
   subnet      $WG_SUBNET
   peer        $PEER_NAME
 
@@ -629,7 +673,5 @@ Next steps:
   ${BLD}wg-peer qr $PEER_NAME${RST}              print the QR in this terminal
   ${BLD}wg-peer config $PEER_NAME 9201${RST}     same keys, different port
 
-${YLW}Remember:${RST} your cloud firewall must allow inbound UDP on: $PORTS
-On Oracle Cloud that is the VCN Security List / NSG ingress rules -
-this script cannot configure it for you.
+${YLW}Remember:${RST} $FIREWALL_NOTE
 SUMMARY
