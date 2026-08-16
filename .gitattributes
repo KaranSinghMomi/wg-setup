@@ -1,0 +1,8 @@
+# These files are executed on Linux servers. CRLF line endings would break
+# the shebang ("bad interpreter") and every heredoc in install.sh, so pin LF
+# regardless of anyone's core.autocrlf setting (Windows defaults to true).
+*.sh          text eol=lf
+.env.example  text eol=lf
+.gitignore    text eol=lf
+
+*.md          text

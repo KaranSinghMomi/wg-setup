@@ -1,0 +1,13 @@
+# Legacy single-port script, kept locally for reference only.
+# Superseded by install.sh (see README). Delete this line to commit it.
+setup-wireguard*.sh
+
+# Real credentials. .env.example is the template and IS tracked.
+installer.env
+.env
+
+# WireGuard keys and generated configs, in case this is ever cloned
+# onto a live server and worked on there.
+*.key
+*.conf
+peers.json
