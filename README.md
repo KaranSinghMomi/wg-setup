@@ -37,7 +37,7 @@ source `0.0.0.0/0`, protocol **UDP**, destination ports `53,9200,9201`.
 ### 3. Run the installer
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/<repo>/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh \
   | sudo bash -s -- \
       --token 123456:AA... \
       --chat -1001234567890 \
@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/<you>/<repo>/main/install.sh \
 Prefer not to pipe a remote script into root? Download and read it first:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/<you>/<repo>/main/install.sh
+curl -fsSLO https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh
 less install.sh
 sudo bash install.sh --token ... --chat ... --ports 53,9200,9201
 ```
