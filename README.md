@@ -30,20 +30,42 @@ sends you the client config — as a `.conf` file **and** a QR code — over Tel
 
 ### 2. Open the ports in your cloud firewall
 
-This is the one step the script **cannot** do for you.
+This is the one step the script **cannot** do for you — it runs inside the VM,
+and the cloud firewall is enforced outside it.
 
-On **Oracle Cloud**: VCN → Security List (or NSG) → add an **Ingress** rule —
-source `0.0.0.0/0`, protocol **UDP**, destination ports `53,9200,9201`.
+On **Oracle Cloud**: Networking → Virtual Cloud Networks → your VCN → Security
+Lists → Default Security List → **Add Ingress Rules**, source `0.0.0.0/0`,
+IP Protocol **UDP**, then:
+
+| If you install with | Destination port range |
+|---|---|
+| `--any-port` | **leave empty** (means all ports) |
+| a fixed `--ports` list | `53,9200,9201` — matching your list exactly |
+
+Whichever you choose, the cloud firewall is the outer gate: ports it blocks never
+reach the server, no matter what the server itself allows.
+
+> Note for people coming from Contabo: Contabo has no cloud firewall, so a script
+> configuring `ufw` alone is enough there. AWS and Oracle both add this second
+> layer, and Oracle additionally ships restrictive host iptables rules — which
+> `install.sh` handles automatically.
 
 ### 3. Run the installer
 
+Recommended — accepts clients on **any** UDP port, one line, pastes cleanly over SSH:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh \
-  | sudo bash -s -- \
-      --token 123456:AA... \
-      --chat -1001234567890 \
-      --ports 53,9200,9201 \
-      --name oracle1
+curl -fsSL https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh | sudo bash -s -- --token <YOUR_BOT_TOKEN> --chat <YOUR_CHAT_ID> --ports 53 --name oracle1 --any-port
+```
+
+`--ports 53` only sets the port written into the generated config — `53` is the
+one most likely to pass a restrictive network, and you can change it afterwards.
+`--any-port` is what makes every other port work.
+
+Locked to a fixed set of ports instead (no `--any-port`, so only these work):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh | sudo bash -s -- --token <YOUR_BOT_TOKEN> --chat <YOUR_CHAT_ID> --ports 53,9200,9201 --name oracle1
 ```
 
 Prefer not to pipe a remote script into root? Download and read it first:
@@ -51,7 +73,7 @@ Prefer not to pipe a remote script into root? Download and read it first:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/KaranSinghMomi/wg-setup/main/install.sh
 less install.sh
-sudo bash install.sh --token ... --chat ... --ports 53,9200,9201
+sudo bash install.sh --token <YOUR_BOT_TOKEN> --chat <YOUR_CHAT_ID> --ports 53 --any-port
 ```
 
 The config and QR code arrive in Telegram. Scan the QR with the WireGuard mobile
